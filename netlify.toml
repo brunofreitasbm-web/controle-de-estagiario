@@ -1,0 +1,19 @@
+# ============================================================
+# Configuração do Netlify — Controle de Estagiário (Porto Terapia)
+# ============================================================
+# Usado quando você conecta este projeto ao Netlify via Git.
+# (Se preferir arrastar a pasta "dist" no site do Netlify, este arquivo é ignorado
+#  e não faz mal nenhum deixá-lo aqui.)
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# App de página única: qualquer rota cai no index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
