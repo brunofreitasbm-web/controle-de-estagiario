@@ -109,11 +109,9 @@ O supervisor pode inserir um ponto manual para o estagiário:
 3. Selecione o estagiário, o dia, a hora correta e digite o motivo (ex: "Celular descarregou").
 4. Salve. O sistema registrará que foi uma inserção manual autorizada pela supervisão.
 
-### 🔴 Como trocar a senha de um estagiário que esqueceu?
-1. Acesse o Painel da Supervisão.
-2. Vá em **Gestão de Estagiários**, encontre o aluno e clique em **Editar**.
-3. Você verá uma opção para **"Redefinir Senha"**. Digite uma nova senha temporária para ele e clique em **Salvar**.
-4. Repasse a nova senha para o estagiário. No próximo login, o sistema pedirá para ele escolher uma senha definitiva.
+### 🔴 Como funciona a Restrição de Acesso por Senha (PIN/Credential) nas Unidades Antônio Barreto e Generalíssimo?
+* **Desativação de Fallback:** Nas Unidades **Antônio Barreto** e **Generalíssimo**, o registro de ponto por senha (PIN/Credential) ou modo de contingência manual foi **desativado com efeito imediato** para o perfil de estagiários.
+* **Obrigatoriedade Biométrica e GPS:** Todos os estagiários alocados nestas unidades devem obrigatoriamente registrar presença via **Controle Facial Biométrico** e validação de **Geolocalização (GPS)** no raio permitido. Não há permissão para contorno por senha nesta modalidade.
 
 ---
 *Este manual foi elaborado para garantir o uso correto e transparente do controle de ponto da Porto Terapia.*
