@@ -29,7 +29,7 @@ Pontos fortes que a auditoria confirma (para não distorcer o quadro): senhas de
 - `.gitignore` (raiz) já lista `.env`, `.env.local`, `.env.*.local` corretamente.
 - `git log --all --full-history -- .env` não retorna nenhum commit — o arquivo `.env` real nunca foi versionado. Apenas `.env.example` está no git, e contém apenas placeholders (`your-project-id`, `your-anon-key`).
 - **Porém**, uma varredura mais ampla do histórico (`git log --all -p`) encontra um segredo real hardcoded fora do `.env`:
-  - **Localização:** commit `692455cf2fc715961a6469add4ba54bd5138da1c`, `supabase/functions/sync-grupoib-professional/index.ts` (linha `const WEBHOOK_SECRET = "d6b458cfe98d16a99b09b209022ebf75cf0f9518c25e17b9";`).
+  - **Localização:** commit `692455cf2fc715961a6469add4ba54bd5138da1c`, `supabase/functions/sync-grupoib-professional/index.ts` (linha `const WEBHOOK_SECRET = "[REDACTED — ver git log do commit para o valor; rotacionar imediatamente no Supabase]";`).
   - Corrigido no commit `4e347c7e1d57a1149721dfcbfe3df7bd974a7e36`, que passou a exigir `Deno.env.get("SYNC_WEBHOOK_SECRET")` (código atual: `supabase/functions/sync-grupoib-professional/index.ts:19-22`).
   - **Impacto:** qualquer clone feito antes da correção, ou qualquer acesso ao histórico do repositório (inclusive um fork antigo, um `git log` num CI, um backup), expõe esse valor. Se o segredo não foi rotacionado no Supabase (Database Webhook + `supabase secrets set`), ele **ainda é válido hoje** e permite chamar a função com privilégio de `service_role` (cria usuários, altera perfis).
   - **Severidade:** Alta.
@@ -504,6 +504,6 @@ Para o ganho completo de HMAC (assinatura do corpo, não só um segredo em heade
 ## Anexo — evidências brutas usadas nesta auditoria
 
 - `git log --all --full-history -- .env` → vazio (sem commits).
-- `git log --all -S "d6b458cfe98d16a99b09b209022ebf75cf0f9518c25e17b9"` → commits `692455c` (introduz) e `4e347c7` (remove/corrige).
+- `git log --all -S "<valor do segredo — ver commit 692455c>"` → commits `692455c` (introduz) e `4e347c7` (remove/corrige).
 - `grep -c "ENABLE ROW LEVEL SECURITY" supabase_schema.sql` → 26; `grep -c "^CREATE TABLE" supabase_schema.sql` → 27 (a tabela sem RLS é `public.workspaces`).
 - `npm audit --production` → 5 vulnerabilidades (detalhe na seção 20).
