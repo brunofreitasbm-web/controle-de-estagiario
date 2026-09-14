@@ -28,7 +28,7 @@ Siga os passos abaixo toda vez que chegar ou sair do seu estágio:
 
 ### Passo 1: Acessar o sistema
 1. Abra o navegador do seu celular (como o Google Chrome ou Safari).
-2. Acesse o link que a supervisão enviou para você (exemplo: `https://seu-sistema.netlify.app`).
+2. Acesse o link que a supervisão enviou para você (exemplo: `https://seu-sistema.vercel.app`).
 
 ### Passo 2: Fazer o login
 1. Na tela inicial, digite seu **Nome de Usuário** (geralmente é no formato `nome.sobrenome`, ex: `joao.silva`) e sua **Senha** (caso seja o seu primeiro acesso, a supervisão lhe dará a senha padrão e o sistema pedirá para você criar uma nova senha pessoal).
