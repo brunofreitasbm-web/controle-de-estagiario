@@ -88,6 +88,9 @@ import ProfessionalKiosk from './components/ProfessionalKiosk';
 import EmployeeKiosk from './components/EmployeeKiosk';
 import NfseUploadModal from './components/NfseUploadModal';
 import PublicPayrollUploadModal from './components/PublicPayrollUploadModal';
+import { createDebounced, isAuditRecordEvent } from './utils/debounce';
+import { fetchInternBiometry } from './utils/internBiometry';
+import useInternPhotos from './hooks/useInternPhotos';
 // Autocadastro de Profissionais PJ (sem sessão) — carregado sob demanda para
 // não engordar o bundle inicial do quiosque (ver plano do módulo de autocadastro PJ).
 const ProfessionalSelfRegistration = lazyWithRetry(() => import('./components/ProfessionalSelfRegistration'));
@@ -410,6 +413,8 @@ export default function App() {
 
   // Visualização de foto de ponto histórico
   const [selectedRecordPhoto, setSelectedRecordPhoto] = useState(null);
+  // Foto de cadastro (3x4) só é buscada quando o modal de comparação abre.
+  const recordModalInternPhotos = useInternPhotos(selectedRecordPhoto ? [selectedRecordPhoto.internId] : []);
   const [showOccurrenceModal, setShowOccurrenceModal] = useState(false);
 
   // Modal de confirmação genérico (substitui window.confirm, que é bloqueante e inconsistente com o resto da UI)
@@ -827,20 +832,27 @@ export default function App() {
     if (!user) return;
     fetchRecords();
     const isSupervisor = user.user_metadata?.role === 'supervisor';
+    // Refetch agrupado (trailing 3s): rajadas de eventos disparam uma única busca.
+    const refetchRecords = createDebounced(() => {
+      fetchRecords();
+      if (BRANDING.showSupervisionChat && isSupervisor) fetchPendingChatCount();
+    });
     const channel = supabase
       .channel('records-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'records' }, (payload) => {
+        // Escritas do motor de auditoria não devem causar refetch (evita loop).
+        if (isAuditRecordEvent(payload)) return;
         if (BRANDING.showSupervisionChat && isSupervisor && payload.eventType === 'INSERT' && payload.new?.action === 'supervisor_chat') {
           toast.info(`Novo chamado recebido de ${payload.new.intern_name}: "${payload.new.justification?.substring(0, 30)}..."`, {
             onClick: () => setActiveAdminTab('rh'),
             autoClose: 8000
           });
         }
-        fetchRecords();
-        if (BRANDING.showSupervisionChat && isSupervisor) fetchPendingChatCount();
+        refetchRecords();
       })
       .subscribe();
     return () => {
+      refetchRecords.cancel();
       supabase.removeChannel(channel);
     };
   }, [user, fetchRecords, fetchPendingChatCount]);
@@ -873,13 +885,13 @@ export default function App() {
     const role = user.user_metadata?.role;
     if (role !== 'supervisor' && role !== 'intern_unit') return;
     fetchInterns();
+    const refetchInterns = createDebounced(() => fetchInterns());
     const channel = supabase
       .channel('interns-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'interns' }, () => {
-        fetchInterns();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'interns' }, refetchInterns)
       .subscribe();
     return () => {
+      refetchInterns.cancel();
       supabase.removeChannel(channel);
     };
   }, [user, fetchInterns]);
@@ -939,13 +951,13 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     fetchUnits();
+    const refetchUnits = createDebounced(() => fetchUnits());
     const channel = supabase
       .channel('units-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'units' }, () => {
-        fetchUnits();
-      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'units' }, refetchUnits)
       .subscribe();
     return () => {
+      refetchUnits.cancel();
       supabase.removeChannel(channel);
     };
   }, [user, fetchUnits]);
@@ -1007,6 +1019,22 @@ export default function App() {
   // Cache do descritor facial de referência calculado a partir da foto (evita reprocessar o mesmo rosto a cada iteração do loop)
   const referenceDescriptorCacheRef = useRef({});
 
+  // Biometria (photo + face_descriptor) do estagiário selecionado no quiosque.
+  // A lista `interns` não traz esses campos (pesados): busca-se 1x por estagiário,
+  // sob demanda, e fica em cache para o loop de reconhecimento e o registro de ponto.
+  const kioskBiometryRef = useRef({});
+  const ensureKioskBiometry = useCallback(async (id) => {
+    if (!id) return null;
+    if (kioskBiometryRef.current[id]) return kioskBiometryRef.current[id];
+    const bio = await fetchInternBiometry(id);
+    if (bio) kioskBiometryRef.current[id] = bio;
+    return bio;
+  }, []);
+
+  useEffect(() => {
+    if (currentView === 'kiosk' && selectedIntern) ensureKioskBiometry(selectedIntern);
+  }, [currentView, selectedIntern, ensureKioskBiometry]);
+
   useEffect(() => {
     let active = true;
     if (!isCameraActive || !selectedIntern || forceManualPoint || showSuccess || currentView !== 'kiosk') {
@@ -1032,14 +1060,16 @@ export default function App() {
         return;
       }
 
-      let targetDescriptor = intern.faceDescriptor;
-      if ((!targetDescriptor || targetDescriptor === '[]') && intern.photo) {
+      const kioskBio = kioskBiometryRef.current[intern.id];
+      const internPhoto = intern.photo || kioskBio?.photo;
+      let targetDescriptor = intern.faceDescriptor || kioskBio?.faceDescriptor;
+      if ((!targetDescriptor || targetDescriptor === '[]') && internPhoto) {
         const cached = referenceDescriptorCacheRef.current[intern.id];
         if (cached) {
           targetDescriptor = cached;
         } else {
           try {
-            const refDesc = await getFaceDescriptor(intern.photo);
+            const refDesc = await getFaceDescriptor(internPhoto);
             if (refDesc) {
               targetDescriptor = JSON.stringify(refDesc);
               referenceDescriptorCacheRef.current[intern.id] = targetDescriptor;
@@ -1361,26 +1391,47 @@ export default function App() {
 
   // Motor de Auditoria de Ponto Retroativo de 30 dias com Sincronização
   const auditRunningRef = useRef(false);
+  // Throttle: a auditoria roda uma vez ao carregar e, no máximo, a cada 30 min.
+  // Antes rodava a cada mudança de records/interns e, como ela própria grava em
+  // 'records', realimentava o Realtime em loop (refetch completo em ~16 canais).
+  const lastAuditAtRef = useRef(0);
+  const AUDIT_MIN_INTERVAL_MS = 30 * 60 * 1000;
   const runPointAudit = useCallback(async () => {
     if (!user || user.user_metadata?.role !== 'supervisor') return;
     // Evita execuções concorrentes (ex.: múltiplas mudanças em 'records' disparando
     // o useEffect quase ao mesmo tempo), que causavam inserção duplicada do mesmo
     // alerta ao checar 'já existe?' contra um snapshot desatualizado do banco.
     if (auditRunningRef.current) return;
+    if (Date.now() - lastAuditAtRef.current < AUDIT_MIN_INTERVAL_MS) return;
     auditRunningRef.current = true;
+    lastAuditAtRef.current = Date.now();
     try {
 
     // Obter data de 30 dias atrás
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
 
-    // Buscar todos os registros dos últimos 30 dias para auditoria completa
-    const { data: recentRecords, error: recordsError } = await supabase
-      .from('records')
-      .select('*')
-      .gte('timestamp', `${thirtyDaysAgoStr}T00:00:00Z`);
+    // Buscar todos os registros dos últimos 30 dias para auditoria completa.
+    // Colunas explícitas (sem photo/justification_doc em base64) e paginado em
+    // blocos de 1000 (limite do PostgREST) para nunca auditar um conjunto truncado
+    // — o que levaria a apagar alertas válidos e reinseri-los depois.
+    const AUDIT_PAGE = 1000;
+    const recentRecords = [];
+    let recordsError = null;
+    for (let from = 0; ; from += AUDIT_PAGE) {
+      const { data: page, error: pageError } = await supabase
+        .from('records')
+        .select('id, intern_id, intern_name, action, justification, timestamp')
+        .gte('timestamp', `${thirtyDaysAgoStr}T00:00:00Z`)
+        .order('timestamp', { ascending: true })
+        .order('id', { ascending: true })
+        .range(from, from + AUDIT_PAGE - 1);
+      if (pageError || !page) { recordsError = pageError || new Error('sem dados'); break; }
+      recentRecords.push(...page);
+      if (page.length < AUDIT_PAGE) break;
+    }
 
-    if (recordsError || !recentRecords) {
+    if (recordsError) {
       console.error("Erro ao carregar registros para auditoria:", recordsError?.code, recordsError?.message || "sem dados");
       return;
     }
@@ -1556,22 +1607,44 @@ export default function App() {
     }
   }, [user, interns]);
 
+  // Executa após o primeiro carregamento de estagiários (o throttle interno
+  // impede reexecução a cada mudança de records/interns) ...
   useEffect(() => {
+    if (!internsLoaded) return;
     runPointAudit();
-  }, [records, interns, runPointAudit]);
+  }, [internsLoaded, runPointAudit]);
+
+  // ... e a cada 30 min enquanto a sessão estiver aberta.
+  const runPointAuditRef = useRef(runPointAudit);
+  useEffect(() => { runPointAuditRef.current = runPointAudit; }, [runPointAudit]);
+  useEffect(() => {
+    const id = setInterval(() => { runPointAuditRef.current(); }, AUDIT_MIN_INTERVAL_MS + 60 * 1000);
+    return () => clearInterval(id);
+  }, [AUDIT_MIN_INTERVAL_MS]);
 
   // Rotina de Backup de Registros e Cadastros
   const handleManualBackup = useCallback(async () => {
     try {
-      const [
-        { data: internsData },
-        { data: recordsData },
-        { data: unitsData }
-      ] = await Promise.all([
-        supabase.from('interns').select('*'),
-        supabase.from('records').select('*'),
-        supabase.from('units').select('*')
-      ]);
+      // Busca paginada (500 por vez) para não sobrecarregar o banco com um único
+      // select gigante (records e interns trazem colunas base64 pesadas).
+      const fetchAllPaged = async (table, orderCol) => {
+        const PAGE = 500;
+        const all = [];
+        for (let from = 0; ; from += PAGE) {
+          const { data, error } = await supabase
+            .from(table)
+            .select('*')
+            .order(orderCol, { ascending: true })
+            .range(from, from + PAGE - 1);
+          if (error) throw error;
+          all.push(...(data || []));
+          if (!data || data.length < PAGE) break;
+        }
+        return all;
+      };
+      const internsData = await fetchAllPaged('interns', 'id');
+      const recordsData = await fetchAllPaged('records', 'id');
+      const { data: unitsData } = await supabase.from('units').select('*');
 
       const backupObj = {
         exportedAt: new Date().toISOString(),
@@ -1866,13 +1939,18 @@ export default function App() {
       }
 
       // Validação facial automática em tempo real
-      let targetDescriptor = intern.faceDescriptor;
+      // Biometria não vem na lista de estagiários: busca sob demanda (cache do quiosque).
+      const registerBio = intern.faceDescriptor !== undefined && intern.photo !== undefined
+        ? { photo: intern.photo, faceDescriptor: intern.faceDescriptor }
+        : await ensureKioskBiometry(intern.id);
+      const registerPhoto = intern.photo || registerBio?.photo;
+      let targetDescriptor = intern.faceDescriptor || registerBio?.faceDescriptor;
 
       // Se não tem faceDescriptor salvo mas possui foto cadastrada, tenta extrair em tempo real
-      if ((!targetDescriptor || targetDescriptor === '[]') && intern.photo) {
+      if ((!targetDescriptor || targetDescriptor === '[]') && registerPhoto) {
         setGeoError('Extraindo biometria de referência da foto do cadastro...');
         try {
-          const refDesc = await getFaceDescriptor(intern.photo);
+          const refDesc = await getFaceDescriptor(registerPhoto);
           if (refDesc) {
             targetDescriptor = JSON.stringify(refDesc);
           }
@@ -2091,6 +2169,12 @@ export default function App() {
 
   const handleEditIntern = (intern) => {
     setEditingId(intern.id);
+    // Foto não vem na lista: carrega sob demanda e preenche o formulário.
+    if (intern.photo === undefined) {
+      fetchInternBiometry(intern.id).then((bio) => {
+        if (bio) setForm((f) => ({ ...f, photo: bio.photo || '' }));
+      });
+    }
     setForm({
       name: intern.name || '',
       course: intern.course || '',
@@ -2102,7 +2186,7 @@ export default function App() {
       active: intern.active !== false,
       startDate: intern.startDate || new Date().toISOString().split('T')[0],
       endDate: intern.endDate || new Date(Date.now() + 365 * 2 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-      photo: intern.photo || '',
+      photo: intern.photo === undefined ? undefined : (intern.photo || ''),
       cpf: intern.cpf || '',
       email: intern.email || '',
       rg: intern.rg || '',
@@ -6186,12 +6270,22 @@ export default function App() {
     return '';
   };
 
-  const handlePrintDocument = (type, intern = null) => {
+  // A lista de estagiários não traz mais a foto (peso): o relatório individual
+  // busca a foto 3x4 sob demanda, só no momento de imprimir/baixar.
+  const withInternPhotoForDocument = async (type, intern) => {
+    if (type !== 'relatorio_individual' || !intern?.id || intern.photo) return intern;
+    const bio = await fetchInternBiometry(intern.id);
+    return bio?.photo ? { ...intern, photo: bio.photo } : intern;
+  };
+
+  const handlePrintDocument = async (type, internArg = null) => {
     if (type.startsWith('download_')) {
-      handleDownloadPDF(type.replace('download_', ''), intern);
+      handleDownloadPDF(type.replace('download_', ''), internArg);
       return;
     }
+    // Abre a janela de forma síncrona (evita bloqueio de pop-up) antes do fetch.
     const printWindow = window.open('', '_blank');
+    const intern = await withInternPhotoForDocument(type, internArg);
     printWindow.document.write(`
       <html>
         <head>
@@ -6221,7 +6315,8 @@ export default function App() {
     };
   };
 
-  const handleDownloadPDF = (type, intern = null) => {
+  const handleDownloadPDF = async (type, internArg = null) => {
+    const intern = await withInternPhotoForDocument(type, internArg);
     const element = document.createElement('div');
     element.innerHTML = sanitizeHtml(getDocumentHtml(type, intern));
     
@@ -7787,7 +7882,8 @@ export default function App() {
   const renderRecordPhotoModal = () => {
     if (!selectedRecordPhoto) return null;
     const intern = interns.find((i) => i.id === selectedRecordPhoto.internId);
-    const hasComparison = !!(intern && intern.photo);
+    const internRegPhoto = recordModalInternPhotos[selectedRecordPhoto.internId];
+    const hasComparison = !!(intern && internRegPhoto);
 
     return (
       <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
@@ -7813,7 +7909,7 @@ export default function App() {
                 <span className="text-[11px] font-semibold text-slate-500 mb-1.5">Foto do Cadastro (Inicial 3x4)</span>
                 <div className="aspect-[3/4] w-36 bg-slate-100 rounded-xl overflow-hidden border border-slate-200 shadow-sm flex items-center justify-center">
                   <img
-                    src={intern.photo}
+                    src={internRegPhoto}
                     alt={`Cadastro de ${selectedRecordPhoto.internName}`}
                     className="w-full h-full object-cover"
                   />
