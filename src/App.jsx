@@ -89,6 +89,7 @@ import EmployeeKiosk from './components/EmployeeKiosk';
 import NfseUploadModal from './components/NfseUploadModal';
 import PublicPayrollUploadModal from './components/PublicPayrollUploadModal';
 import { createDebounced, isAuditRecordEvent } from './utils/debounce';
+import { classifySession, SESSION_LOST_MESSAGE, SESSION_TRANSIENT_MESSAGE } from './utils/sessionGuard';
 import { fetchInternBiometry } from './utils/internBiometry';
 import useInternPhotos from './hooks/useInternPhotos';
 // Autocadastro de Profissionais PJ (sem sessão) — carregado sob demanda para
@@ -866,6 +867,20 @@ export default function App() {
     const role = user.user_metadata?.role;
     if (role !== 'supervisor' && role !== 'intern_unit') return;
     try {
+      // Sem sessão o supabase-js consulta como anônimo e o PostgREST nega
+      // (401). Confirma o login antes; só desloga se a sessão realmente se
+      // perdeu, nunca por falha de rede ao renovar o token.
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const sessionState = classifySession({ session: sessionData?.session, error: sessionError });
+      if (sessionState === 'lost') {
+        handleSession(null);
+        setLoginError(SESSION_LOST_MESSAGE);
+        return;
+      }
+      if (sessionState === 'transient') {
+        toast.error(SESSION_TRANSIENT_MESSAGE);
+        return;
+      }
       const { data, error } = await supabase
         .from('interns')
         .select(INTERN_SELECT_FIELDS)
@@ -881,7 +896,7 @@ export default function App() {
     } finally {
       setInternsLoaded(true);
     }
-  }, [user]);
+  }, [user, handleSession, setLoginError]);
 
   useEffect(() => {
     if (!user) return;
