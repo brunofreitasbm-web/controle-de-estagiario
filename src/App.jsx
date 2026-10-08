@@ -511,6 +511,7 @@ export default function App() {
   const [autogestaoCpfCheck, setAutogestaoCpfCheck] = useState({ key: '', status: '' });
   const [publicInterns, setPublicInterns] = useState([]);
   const [loadingPublicInterns, setLoadingPublicInterns] = useState(false);
+  const [publicInternsError, setPublicInternsError] = useState('');
 
   // Autogestão de Biometria Facial (Funcionários CLT)
   const [cltAutogestaoUnitId, setCltAutogestaoUnitId] = useState('');
