@@ -757,14 +757,16 @@ export default function App() {
   const fetchPendingChatCount = useCallback(async () => {
     if (!BRANDING.showSupervisionChat) return;
     if (!user || user.user_metadata?.role !== 'supervisor') return;
-    const { data, error } = await supabase
+    // Contagem no servidor (HEAD + count exact): evita baixar todas as linhas de
+    // supervisor_chat. `geo->>status` = 'pending' só casa se geo existir e status for 'pending'.
+    const { count, error } = await supabase
       .from('records')
-      .select('id, geo')
-      .eq('action', 'supervisor_chat');
-    
-    if (!error && data) {
-      const pending = data.filter(r => r.geo && r.geo.status === 'pending');
-      setPendingChatCount(pending.length);
+      .select('id', { count: 'exact', head: true })
+      .eq('action', 'supervisor_chat')
+      .eq('geo->>status', 'pending');
+
+    if (!error && typeof count === 'number') {
+      setPendingChatCount(count);
     }
   }, [user]);
 
@@ -3699,47 +3701,43 @@ export default function App() {
 
   const loadPublicInterns = async () => {
     setLoadingPublicInterns(true);
+    setPublicInternsError('');
     try {
       // Restringe à lista de unidades deste workspace (BRANDING.kioskUnits) —
       // esta tela é pública/sem sessão, então nunca deve misturar estagiários
       // do outro grupo (ver UNITS_DEFAULT acima).
       const workspaceUnitIds = BRANDING.kioskUnits.map((ku) => ku.id);
 
-      // 1. RPC get_public_interns_basic (funciona com ou sem sessão JWT ativa). Devolve só
+      // RPC get_public_interns_basic (funciona com ou sem sessão JWT ativa). Devolve só
       // id, nome, unidade e um indicador de biometria: nunca CPF nem a assinatura facial (LGPD).
-      const { data: rpcData, error: rpcError } = await supabase.rpc('get_public_interns_basic', {
-        p_workspace_unit_ids: workspaceUnitIds
-      });
-
-      if (!rpcError && rpcData && rpcData.length > 0) {
-        setPublicInterns(rpcData.map((r) => ({
-          id: r.id,
-          name: r.name,
-          unitId: r.unit_id,
-          active: r.active !== false,
-          hasBiometria: !!r.has_biometria,
-          cpf: '',
-          faceDescriptor: ''
-        })));
-        return;
+      // Sem fallback para select('*') em public.interns: a leitura direta por anon expõe
+      // CPF, dados bancários e documentos (e é negada pelo banco). Em falha, tenta de novo
+      // (2 retentativas) e, se persistir, mostra erro visível em vez de lista vazia.
+      let lastError = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 1000 * attempt));
+        const { data: rpcData, error: rpcError } = await supabase.rpc('get_public_interns_basic', {
+          p_workspace_unit_ids: workspaceUnitIds
+        });
+        if (!rpcError) {
+          setPublicInterns((rpcData || []).map((r) => ({
+            id: r.id,
+            name: r.name,
+            unitId: r.unit_id,
+            active: r.active !== false,
+            hasBiometria: !!r.has_biometria,
+            cpf: '',
+            faceDescriptor: ''
+          })));
+          return;
+        }
+        lastError = rpcError;
+        console.error(`Erro ao carregar estagiários públicos (tentativa ${attempt + 1}/3):`, rpcError);
       }
-
-      // 2. Sem fallback para select('*') em public.interns: esta tela é pública e
-      // a leitura direta da tabela por anon expõe CPF, dados bancários e documentos.
-      if (rpcError) console.error('Erro ao carregar estagiários públicos:', rpcError);
-
-      if (interns && interns.length > 0) {
-        // 3. Fallback para estagiários pré-carregados no estado local
-        const filtered = interns.filter(i => i.active !== false && workspaceUnitIds.includes(i.unitId));
-        if (filtered.length > 0) setPublicInterns(filtered);
-      }
+      if (lastError) setPublicInternsError('Não foi possível carregar a lista de estagiários. Verifique a conexão e tente novamente.');
     } catch (e) {
       console.error("Erro público ao carregar estagiários:", e);
-      if (interns && interns.length > 0) {
-        const workspaceUnitIds = BRANDING.kioskUnits.map((ku) => ku.id);
-        const filtered = interns.filter(i => i.active !== false && workspaceUnitIds.includes(i.unitId));
-        if (filtered.length > 0) setPublicInterns(filtered);
-      }
+      setPublicInternsError('Não foi possível carregar a lista de estagiários. Verifique a conexão e tente novamente.');
     } finally {
       setLoadingPublicInterns(false);
     }
@@ -3887,6 +3885,13 @@ export default function App() {
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
                       Selecione o seu nome na lista:
                     </label>
+                    {loadingPublicInterns && <p className="text-xs text-slate-500 mb-1">Carregando lista...</p>}
+                    {publicInternsError && (
+                      <div className="mb-2 p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-800 flex items-center justify-between gap-2">
+                        <span>{publicInternsError}</span>
+                        <button type="button" onClick={loadPublicInterns} className="font-bold underline shrink-0">Tentar novamente</button>
+                      </div>
+                    )}
                     <select
                       value={autogestaoInternId}
                       onChange={(e) => {
