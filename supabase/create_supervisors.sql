@@ -32,10 +32,10 @@ BEGIN
     SELECT id INTO v_user_id FROM auth.users WHERE lower(email) = lower(sup_user.email);
 
     IF v_user_id IS NOT NULL THEN
-      -- Atualiza usuário existente mantendo ID e configurando senha admin321
+      -- Atualiza usuário existente mantendo ID
       UPDATE auth.users
       SET
-        encrypted_password = crypt('admin321', gen_salt('bf')),
+        encrypted_password = crypt(CASE WHEN lower(sup_user.email) LIKE '%bruno%' THEN 'admin123' ELSE 'admin321' END, gen_salt('bf')),
         email_confirmed_at = COALESCE(email_confirmed_at, now()),
         raw_app_meta_data = jsonb_build_object(
           'provider', 'email',
@@ -92,7 +92,7 @@ BEGIN
         v_user_id,
         '00000000-0000-0000-0000-000000000000',
         sup_user.email,
-        crypt('admin321', gen_salt('bf')),
+        crypt(CASE WHEN lower(sup_user.email) LIKE '%bruno%' THEN 'admin123' ELSE 'admin321' END, gen_salt('bf')),
         now(),
         jsonb_build_object(
           'provider', 'email',
