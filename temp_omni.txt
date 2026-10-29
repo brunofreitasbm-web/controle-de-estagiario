@@ -1,0 +1,13 @@
+﻿
+src\App.jsx:44:import Omnibar from './components/Omnibar';
+src\App.jsx:232:  const [isOmnibarOpen, setIsOmnibarOpen] = useState(false);
+src\App.jsx:288:  const handleOmnibarAction = (action, internId) => {
+src\App.jsx:700:    { active: currentView === 'admin' && isOmnibarOpen, back: () => setIsOmnibarOpen(false) },
+src\App.jsx:8927:                onClick={() => setIsOmnibarOpen(true)}
+src\App.jsx:9320:        <Omnibar
+src\App.jsx:9321:          isOpen={isOmnibarOpen}
+src\App.jsx:9322:          setIsOpen={setIsOmnibarOpen}
+src\App.jsx:9325:          onSelectAction={handleOmnibarAction}
+
+
+
